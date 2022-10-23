@@ -41,6 +41,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <inttypes.h>
+#include <stdio.h>
 
 
 /*
@@ -321,6 +322,7 @@ typedef struct {
   uint8_t* pBuffEnd;
   uint8_t uiState;
   uint8_t uiMPS;
+  uint8_t buffer[8];
 } SWelsCabacDecEngine, *PWelsCabacDecEngine,SWelsCabacCtx, *PWelsCabacCtx;
 
 
@@ -358,6 +360,7 @@ static int32_t Read32BitsCabac (PWelsCabacDecEngine pDecEngine, uint32_t* uiValu
   }
   return ERR_NONE;
 }
+
 static const uint8_t g_kRenormTable256[256] = {
   6, 6, 6, 6, 6, 6, 6, 6,
   5, 5, 5, 5, 5, 5, 5, 5,
@@ -402,17 +405,24 @@ if(iErrorInfo) { \
 
 // ------------------- 2. decoding Engine initialization
 int32_t InitCabacDecEngine(PWelsCabacDecEngine pDecEngine, uint8_t *buf, size_t len) {
-  if (len < 5) {
+
+   if (len == 0) {
     return GENERATE_ERROR_NO (ERR_LEVEL_MB_DATA, ERR_CABAC_NO_BS_TO_READ);
   }
- 
+
+  if (len <= 8) {
+    memset(pDecEngine->buffer,0,sizeof(pDecEngine->buffer));
+    memcpy(pDecEngine->buffer, buf, len);
+    buf = pDecEngine->buffer;
+    len = 8;
+  }
   pDecEngine->pBuffEnd = buf+len;
   pDecEngine->uiOffset = ((buf[0] << 16) | (buf[1] << 8) | buf[2]);
   pDecEngine->uiOffset <<= 16;
   pDecEngine->uiOffset |= (buf[3] << 8) | buf[4];
   pDecEngine->iBitsLeft = 31;
   pDecEngine->pBuffCurr = buf + 5;
-
+  
   pDecEngine->uiRange = WELS_CABAC_HALF;
   return ERR_NONE;
 }
@@ -451,6 +461,15 @@ int32_t DecodeBinCabac (PWelsCabacDecEngine pDecEngine, uint32_t* uiBinVal) {
     pDecEngine->uiOffset = uiOffset;
     return ERR_NONE;
   }
+  if (pDecEngine->pBuffCurr >= pDecEngine->pBuffEnd) {
+    //append
+    
+    
+    pDecEngine->iBitsLeft = -pDecEngine->iBitsLeft;
+    pDecEngine->uiOffset = uiOffset << pDecEngine->iBitsLeft;
+    //printf("<no more data %016llx - %d!>",uiOffset,pDecEngine->iBitsLeft);
+    return ERR_NONE;
+  }
   uint32_t uiVal = 0;
   int32_t iNumBitsRead = 0;
   iErrorInfo = Read32BitsCabac (pDecEngine, &uiVal, &iNumBitsRead);
@@ -465,25 +484,48 @@ int32_t DecodeBinCabac (PWelsCabacDecEngine pDecEngine, uint32_t* uiBinVal) {
 #include <stdlib.h>
 #include <stdio.h>
 #include <assert.h>
+#if defined(__APPLE__) || defined(__MACH__)
+#include <mach/mach_time.h>
+#define absolute_time mach_absolute_time
+#elif defined(_WIN32)
+   #include <windows.h>
+static inline absolute_time() {
+  FILETIME ft;
+  getsystemtime(&ft);
+  return (ft.dwHighDateTime << 32) | ft.dwLowDateTime;
+}
+#endif
 int main() {
+  srand(absolute_time());
   SCabacCtx enc = {0};
-  static uint8_t buffer[8192] = {0};
-  WelsCabacEncodeInit(&enc,buffer,8192);
-  uint32_t data[1024];
+  static uint8_t buffer[65536] = {0};
+  WelsCabacEncodeInit(&enc,buffer,sizeof(buffer));
+  uint32_t data[2048];
   //populate data
-  for (int i=0;i<1024;i++) {
-    data[i] = rand() % 4 == 0; 
+  for (int i=0;i<2048;i++) {
+    data[i] = rand() % 8 == 0; 
   }
+  int BIT_COUNT = rand() % 2048;
+  if (BIT_COUNT == 0)
+      BIT_COUNT = 1;
   //compress data
-  for (int i=0; i<1024; i++)
+  for (int i=0; i<BIT_COUNT; i++)
     WelsCabacEncodeDecision(&enc,data[i]);
   WelsCabacEncodeFlush(&enc);
   size_t encoded_sz = WelsCabacEncodeGetPtr(&enc) - buffer;
+  printf("%d -> %d bits\n", BIT_COUNT, encoded_sz*8);
+
+  //printf("encoded sz=%d bc=%d\n", encoded_sz,BIT_COUNT);
+  // for (int i=0;i<encoded_sz;i++) {
+  //   printf(" %02.2x",buffer[i]);
+  // }
+  // printf("\n");
   //decompress
   SWelsCabacDecEngine dec = {0};
   int err = InitCabacDecEngine(&dec, buffer, encoded_sz);
   assert(err == ERR_NONE);
-  for (int i=0;i<1024;i++) {
+  //printf("%016llx - %d\n", dec.uiOffset, dec.iBitsLeft);
+  for (int i=0;i<BIT_COUNT;i++) {
     uint32_t bit;
     err = DecodeBinCabac(&dec,&bit);
     assert(err == ERR_NONE);
@@ -493,7 +535,13 @@ int main() {
       return 1;
     }
   }
+  // printf("{");
+  // for (int i=0; i<80; i++) {
+  //   uint32_t bit;
+  //   err = DecodeBinCabac(&dec,&bit);
+  //   printf("%u", bit);
+  // }
+  // printf("}\n");
   printf("test passed!\n");
-  printf("%d -> %d bits\n", 1024, encoded_sz*8);
   return 0;
 }
