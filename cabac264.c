@@ -294,7 +294,6 @@ void WelsCabacEncodeBypassOne (SCabacCtx* pCbCtx, int32_t uiBin) {
   pCbCtx->m_uiLow += kuiBinBitmask & pCbCtx->m_uiRange;
 }
 
-// inline function definitions.
 void WelsCabacEncodeDecision (SCabacCtx* pCbCtx, uint32_t uiBin) {
   if (uiBin == pCbCtx->Mps) {
     const int32_t kiState = pCbCtx->State;
@@ -323,7 +322,7 @@ typedef struct {
   uint8_t uiState;
   uint8_t uiMPS;
   uint8_t buffer[8];
-} SWelsCabacDecEngine, *PWelsCabacDecEngine,SWelsCabacCtx, *PWelsCabacCtx;
+} SWelsCabacDecEngine, *PWelsCabacDecEngine;
 
 
 
@@ -427,6 +426,38 @@ int32_t InitCabacDecEngine(PWelsCabacDecEngine pDecEngine, uint8_t *buf, size_t 
   return ERR_NONE;
 }
 
+ int32_t DecodeBypassCabac (PWelsCabacDecEngine pDecEngine, uint32_t* uiBinVal) {
+  int32_t iErrorInfo = ERR_NONE;
+  int32_t iBitsLeft = pDecEngine->iBitsLeft;
+  uint64_t uiOffset = pDecEngine->uiOffset;
+  uint64_t uiRangeValue;
+
+
+  if (iBitsLeft <= 0) {
+    uint32_t uiVal = 0;
+    int32_t iNumBitsRead = 0;
+    iErrorInfo = Read32BitsCabac (pDecEngine, &uiVal, &iNumBitsRead);
+    uiOffset = (uiOffset << iNumBitsRead) | uiVal;
+    iBitsLeft = iNumBitsRead;
+    if (iErrorInfo && iBitsLeft == 0) {
+      return iErrorInfo;
+    }
+  }
+  iBitsLeft--;
+  uiRangeValue = (pDecEngine->uiRange << iBitsLeft);
+  if (uiOffset >= uiRangeValue) {
+    pDecEngine->iBitsLeft = iBitsLeft;
+    pDecEngine->uiOffset = uiOffset - uiRangeValue;
+    *uiBinVal = 1;
+    return ERR_NONE;
+  }
+  pDecEngine->iBitsLeft = iBitsLeft;
+  pDecEngine->uiOffset = uiOffset;
+  *uiBinVal = 0;
+  return ERR_NONE;
+}
+
+
 int32_t DecodeBinCabac (PWelsCabacDecEngine pDecEngine, uint32_t* uiBinVal) {
   int32_t iErrorInfo = ERR_NONE;
   uint32_t uiState = pDecEngine->uiState;
@@ -462,9 +493,6 @@ int32_t DecodeBinCabac (PWelsCabacDecEngine pDecEngine, uint32_t* uiBinVal) {
     return ERR_NONE;
   }
   if (pDecEngine->pBuffCurr >= pDecEngine->pBuffEnd) {
-    //append
-    
-    
     pDecEngine->iBitsLeft = -pDecEngine->iBitsLeft;
     pDecEngine->uiOffset = uiOffset << pDecEngine->iBitsLeft;
     //printf("<no more data %016llx - %d!>",uiOffset,pDecEngine->iBitsLeft);
@@ -477,6 +505,39 @@ int32_t DecodeBinCabac (PWelsCabacDecEngine pDecEngine, uint32_t* uiBinVal) {
   pDecEngine->iBitsLeft += iNumBitsRead;
   if (iErrorInfo && pDecEngine->iBitsLeft < 0) {
     return iErrorInfo;
+  }
+  return ERR_NONE;
+}
+
+int32_t DecodeTerminateCabac (PWelsCabacDecEngine pDecEngine, uint32_t* uiBinVal) {
+  int32_t iErrorInfo = ERR_NONE;
+  uint64_t uiRange = pDecEngine->uiRange - 2;
+  uint64_t uiOffset = pDecEngine->uiOffset;
+
+  if (uiOffset >= (uiRange << pDecEngine->iBitsLeft)) {
+    *uiBinVal = 1;
+  } else {
+    *uiBinVal = 0;
+    // Renorm
+    if (uiRange < WELS_CABAC_QUARTER) {
+      int32_t iRenorm = g_kRenormTable256[uiRange];
+      pDecEngine->uiRange = (uiRange << iRenorm);
+      pDecEngine->iBitsLeft -= iRenorm;
+      if (pDecEngine->iBitsLeft < 0) {
+        uint32_t uiVal = 0;
+        int32_t iNumBitsRead = 0;
+        iErrorInfo = Read32BitsCabac (pDecEngine, &uiVal, &iNumBitsRead);
+        pDecEngine->uiOffset = (pDecEngine->uiOffset << iNumBitsRead) | uiVal;
+        pDecEngine->iBitsLeft += iNumBitsRead;
+      }
+      if (iErrorInfo && pDecEngine->iBitsLeft < 0) {
+        return iErrorInfo;
+      }
+      return ERR_NONE;
+    } else {
+      pDecEngine->uiRange = uiRange;
+      return ERR_NONE;
+    }
   }
   return ERR_NONE;
 }
@@ -509,11 +570,14 @@ int main() {
   if (BIT_COUNT == 0)
       BIT_COUNT = 1;
   //compress data
-  for (int i=0; i<BIT_COUNT; i++)
-    WelsCabacEncodeDecision(&enc,data[i]);
+  for (int i=0; i<BIT_COUNT; i++) {
+    // if (i&1)
+          WelsCabacEncodeDecision(&enc,data[i]);
+    //  else
+    //     WelsCabacEncodeBypassOne(&enc,data[i]);
+  }
   WelsCabacEncodeFlush(&enc);
   size_t encoded_sz = WelsCabacEncodeGetPtr(&enc) - buffer;
-  printf("%d -> %d bits\n", BIT_COUNT, encoded_sz*8);
 
   //printf("encoded sz=%d bc=%d\n", encoded_sz,BIT_COUNT);
   // for (int i=0;i<encoded_sz;i++) {
@@ -525,16 +589,20 @@ int main() {
   int err = InitCabacDecEngine(&dec, buffer, encoded_sz);
   assert(err == ERR_NONE);
   //printf("%016llx - %d\n", dec.uiOffset, dec.iBitsLeft);
+  uint32_t bit;
   for (int i=0;i<BIT_COUNT;i++) {
-    uint32_t bit;
-    err = DecodeBinCabac(&dec,&bit);
+    
+    // if (i&1)
+       err = DecodeBinCabac(&dec,&bit);
+    // else
+    //  err = DecodeBypassCabac(&dec,&bit);
     assert(err == ERR_NONE);
     //verify
-    if (bit != data[i]) {
-      printf("verify fail!\n");
-      return 1;
-    }
+    assert(bit == data[i]);
   }
+  err = DecodeTerminateCabac(&dec,&bit);
+  assert(err == ERR_NONE);
+  assert(bit == 1);
   // printf("{");
   // for (int i=0; i<80; i++) {
   //   uint32_t bit;
@@ -542,6 +610,6 @@ int main() {
   //   printf("%u", bit);
   // }
   // printf("}\n");
-  printf("test passed!\n");
-  return 0;
+   printf("%4d -> %4d bits   -   passed!\n", BIT_COUNT, encoded_sz*8);
+ return 0;
 }
