@@ -491,7 +491,7 @@ int32_t DecodeBinCabac (PWelsCabacDecEngine pDecEngine, uint32_t* uiBinVal) {
    #include <windows.h>
 static inline absolute_time() {
   FILETIME ft;
-  getsystemtime(&ft);
+  GetSystemTimeAsFileTime(&ft);
   return (ft.dwHighDateTime << 32) | ft.dwLowDateTime;
 }
 #endif
