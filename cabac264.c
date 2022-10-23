@@ -400,7 +400,6 @@ if(iErrorInfo) { \
   return iErrorInfo; \
 }
 
-#define READ_BE_64(ptr) ((ptr)[0]<<)
 // ------------------- 2. decoding Engine initialization
 int32_t InitCabacDecEngine(PWelsCabacDecEngine pDecEngine, uint8_t *buf, size_t len) {
   if (len < 5) {
@@ -490,7 +489,7 @@ int main() {
     assert(err == ERR_NONE);
     //verify
     if (bit != data[i]) {
-      printf("verify fail!");
+      printf("verify fail!\n");
       return 1;
     }
   }
